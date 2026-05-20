@@ -6,9 +6,9 @@ import io
 st.set_page_config(page_title="Automatización Ventas MKT", page_icon="📊", layout="wide")
 
 st.title("📊 Automatizador de Informe de Ventas - Marketing")
-st.write("Sube los archivos .txt reales descargados de Amazon Seller Central para generar el informe consolidado.")
+st.write("Sube los archivos .txt actualizados de Amazon para generar tu informe.")
 
-# 1. Selectores de archivos en la interfaz [cite: 8, 10]
+# Selectores de archivos en la interfaz
 col1, col2 = st.columns(2)
 with col1:
     archivo_jabiru = st.file_uploader("Subir TXT de JABIRU", type=["txt"])
@@ -19,9 +19,7 @@ def limpiar_sku(sku):
     if pd.isna(sku):
         return sku
     sku_str = str(sku).strip()
-    # Limpiar prefijos de país (S, FR, IT, DE) seguidos de guion, espacio o guion bajo [cite: 22]
     sku_str = re.sub(r'^(S|FR|IT|DE)[\s\-_]*', '', sku_str, flags=re.IGNORECASE)
-    # Quitar puntos del SKU [cite: 22]
     sku_str = sku_str.replace('.', '')
     return sku_str
 
@@ -30,14 +28,11 @@ def procesar_archivo(archivo, nombre_cuenta):
         return None
     
     try:
-        # Leer el archivo TXT nativo de Amazon (separado por tabulaciones) [cite: 15, 16]
-        df = pd.read_csv(archivo, sep='\t', dtype=str)
+        # 'utf-8-sig' elimina automáticamente caracteres ocultos/BOM que congelan la lectura
+        df = pd.read_csv(archivo, sep='\t', dtype=str, encoding='utf-8-sig')
         
-        # Normalizar las cabeceras del archivo original (quitar espacios y pasar a minúsculas)
-        df.columns = [col.lower().strip() for col in df.columns]
-        
-        # Mapeo de las columnas normalizadas a los nombres deseados por Marketing [cite: 17]
-        mapeo_columnas = {
+        # Diccionario de búsqueda directo sin bucles extraños
+        mapeo = {
             'purchase-date': 'FECHA',
             'sku': 'REFERENCIA',
             'asin': 'ASIN',
@@ -46,61 +41,59 @@ def procesar_archivo(archivo, nombre_cuenta):
             'ship-country': 'ship-country'
         }
         
-        # Comprobar si todas las columnas necesarias existen en el DataFrame normalizado
-        for col_req in mapeo_columnas.keys():
-            if col_req not in df.columns:
-                st.error(f"⚠️ El archivo de {nombre_cuenta} no contiene la columna necesaria: '{col_req}'")
-                return None
+        # Mapear las columnas existentes comparando de forma directa y limpia
+        columnas_encontradas = {}
+        for col_original in df.columns:
+            col_normalizada = str(col_original).lower().strip()
+            if col_normalizada in mapeo:
+                columnas_encontradas[col_original] = mapeo[col_normalizada]
         
-        # Filtrar solo las columnas de interés usando los nombres normalizados
-        df = df[list(mapeo_columnas.keys())]
+        # Verificar si tenemos las 6 columnas vitales
+        if len(columnas_encontradas) < 6:
+            st.error(f"⚠️ Al archivo de {nombre_cuenta} le faltan columnas. Asegúrate de que es el reporte correcto.")
+            return None
+            
+        # Filtrar y renombrar usando el mapeo directo verificado
+        df = df[list(columnas_encontradas.keys())]
+        df = df.rename(columns=columnas_encontradas)
         
-        # Renombrar a las variables solicitadas por el negocio [cite: 17, 25]
-        df = df.rename(columns=mapeo_columnas)
-        
-        # Añadir la columna de identificación de la cuenta [cite: 18, 25]
+        # Añadir la cuenta
         df['CUENTA'] = nombre_cuenta
         
-        # --- LIMPIEZA DE FILAS (CANTIDAD E IMPORTE) ---
-        # Quitar nulos iniciales en las columnas críticas [cite: 23, 24]
+        # Limpieza rápida de filas vacías
         df = df.dropna(subset=['CANTIDAD', 'IMPORTE TOTAL'])
         
-        # Convertir variables a numéricas de forma segura
+        # Conversión de tipos de datos de forma directa
         df['CANTIDAD'] = pd.to_numeric(df['CANTIDAD'], errors='coerce')
         df['IMPORTE TOTAL'] = pd.to_numeric(df['IMPORTE TOTAL'], errors='coerce')
-        
-        # Filtrar: Asegurar que no haya celdas vacías, ceros o valores negativos [cite: 23, 24]
         df = df[(df['CANTIDAD'] > 0) & (df['IMPORTE TOTAL'] > 0)]
         
-        # --- PROCESAMIENTO DE FECHAS Y SEMANAS ---
-        # Extraer los primeros 10 caracteres (YYYY-MM-DD) para evitar conflictos con la zona horaria de Amazon
+        # Procesar fechas cortando texto de forma segura (sin interpretar zonas horarias complejas)
         df['FECHA_CORTA'] = df['FECHA'].astype(str).str.slice(0, 10)
         df['FECHA_DATETIME'] = pd.to_datetime(df['FECHA_CORTA'], format='%Y-%m-%d', errors='coerce')
         
-        # Calcular Número de Semana (Estilo Excel: Domingo a Sábado = modificador %U) [cite: 14, 21]
+        # Calcular semana y formatear visualmente
         df['SEMANA'] = df['FECHA_DATETIME'].dt.strftime('%U').astype(float) + 1
-        
-        # Formatear la fecha visual en formato dd/mm/aaaa [cite: 20]
         df['FECHA'] = df['FECHA_DATETIME'].dt.strftime('%d/%m/%Y')
         
-        # Aplicar la limpieza de los SKU [cite: 22]
+        # Limpiar SKU
         df['REFERENCIA'] = df['REFERENCIA'].apply(limpiar_sku)
         
-        # Reestructurar las columnas según el diseño final solicitado [cite: 25]
+        # Estructura final estricta
         columnas_finales = ['FECHA', 'SEMANA', 'REFERENCIA', 'ASIN', 'CANTIDAD', 'IMPORTE TOTAL', 'CUENTA', 'ship-country']
         df = df[columnas_finales]
         
-        # Eliminar cualquier registro con conversión de fecha corrupta
+        # Eliminar cualquier fila rota residual
         df = df.dropna(subset=['FECHA', 'SEMANA'])
         df['SEMANA'] = df['SEMANA'].astype(int)
         
         return df
 
     except Exception as e:
-        st.error(f"Error interno al procesar {nombre_cuenta}: {e}")
+        st.error(f"Error procesando {nombre_cuenta}: {str(e)}")
         return None
 
-# Flujo principal de la aplicación
+# Ejecución de la lógica en Streamlit
 dataframes = []
 if archivo_jabiru:
     df_j = procesar_archivo(archivo_jabiru, "JABIRU")
@@ -113,45 +106,36 @@ if archivo_turaco:
         dataframes.append(df_t)
 
 if len(dataframes) > 0:
-    # Combinar los datos unificados [cite: 25]
     resultado_final = pd.concat(dataframes, ignore_index=True)
-    
-    # Ordenar por Semana y por Fecha de manera ascendente
     resultado_final = resultado_final.sort_values(by=['SEMANA', 'FECHA'], ascending=[True, True])
     
-    st.success("🎯 ¡Archivos alineados y procesados con éxito!")
-    
+    st.success("🎯 ¡Archivos procesados instantáneamente!")
     st.subheader("Vista previa del Informe Final")
     st.dataframe(resultado_final)
     
-    # Generador de Excel con formato físico de moneda e importes
+    # Renderizado a Excel físico
     @st.cache_data
     def generar_excel_formateado(df):
         buffer = io.BytesIO()
         with pd.ExcelWriter(buffer, engine='xlsxwriter') as writer:
             df.to_excel(writer, index=False, sheet_name='Ventas MKT')
-            
             workbook  = writer.book
             worksheet = writer.sheets['Ventas MKT']
             
-            # Formatos de celda para emular el resultado del documento
             formato_moneda = workbook.add_format({'num_format': '#,##0.00" €"'})
             formato_entero = workbook.add_format({'num_format': '#,##0', 'align': 'center'})
             formato_centrado = workbook.add_format({'align': 'center'})
             
-            # Anchos de columna configurados
-            worksheet.set_column('A:A', 14, formato_centrado)  # Fecha
-            worksheet.set_column('B:B', 10, formato_entero)    # Semana
-            worksheet.set_column('C:D', 18)                    # Referencia y ASIN
-            worksheet.set_column('E:E', 12, formato_entero)    # Cantidad
-            worksheet.set_column('F:F', 16, formato_moneda)    # Importe Total
-            worksheet.set_column('G:H', 14, formato_centrado)  # Cuenta y País
+            worksheet.set_column('A:A', 14, formato_centrado)
+            worksheet.set_column('B:B', 10, formato_entero)
+            worksheet.set_column('C:D', 18)
+            worksheet.set_column('E:E', 12, formato_entero)
+            worksheet.set_column('F:F', 16, formato_moneda)
+            worksheet.set_column('G:H', 14, formato_centrado)
             
         return buffer.getvalue()
     
     excel_final = generar_excel_formateado(resultado_final)
-    
-    # Extraer la semana del informe para el nombre dinámico del archivo
     num_semana = resultado_final['SEMANA'].iloc[0] if not resultado_final.empty else "Desconocida"
     
     st.download_button(
@@ -161,4 +145,4 @@ if len(dataframes) > 0:
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     )
     
-    st.info(f"📧 Destinatario: **martacuesta@cecotec.es** (Proceso programado para los miércoles) [cite: 26, 27]")
+    st.info(f"📧 Destinatario: martacuesta@cecotec.es")
