@@ -88,7 +88,7 @@ def enviar_correo_marta(excel_bytes, nombre_archivo, num_semana):
         smtp_server = st.secrets["correo"]["servidor_smtp"]
         puerto = int(st.secrets["correo"]["puerto"])
         
-        destinatario = "raulmartinez@cecotec.es"
+        destinatario = "martacuesta@cecotec.es"
         
         msg = MIMEMultipart()
         msg['From'] = remitente
@@ -186,4 +186,4 @@ if len(dataframes) > 0:
             with st.spinner("Enviando correo con el archivo adjunto..."):
                 exito = enviar_correo_marta(excel_final, nombre_del_excel, semana_maxima)
                 if exito:
-                    st.success(f"📩 ¡Correo enviado con éxito a martacuesta@cecotec.es!")
+                    st.success(f"📩 ¡Correo enviado con éxito a Marketing!")
