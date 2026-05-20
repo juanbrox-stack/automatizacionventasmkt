@@ -2,6 +2,11 @@ import streamlit as st
 import pandas as pd
 import re
 import io
+import smtplib
+from email.mime.multipart import MIMEMultipart
+from email.mime.base import MIMEBase
+from email.mime.text import MIMEText
+from email import encoders
 
 st.set_page_config(page_title="Automatización Ventas MKT", page_icon="📊", layout="wide")
 
@@ -19,7 +24,6 @@ def limpiar_sku(sku):
     if pd.isna(sku):
         return sku
     sku_str = str(sku).strip()
-    # Quitar prefijos de país (S, FR, IT, DE) y puntos de forma segura [cite: 22]
     sku_str = re.sub(r'^(S|FR|IT|DE)[\s\-_]*', '', sku_str, flags=re.IGNORECASE)
     sku_str = sku_str.replace('.', '')
     return sku_str
@@ -29,10 +33,8 @@ def procesar_archivo(archivo, nombre_cuenta):
         return None
     
     try:
-        # El encoding 'utf-8-sig' es vital para ignorar caracteres ocultos de Amazon
         df = pd.read_csv(archivo, sep='\t', dtype=str, encoding='utf-8-sig')
         
-        # Diccionario de equivalencias para las columnas requeridas [cite: 17, 18]
         mapeo = {
             'purchase-date': 'FECHA',
             'sku': 'REFERENCIA',
@@ -42,41 +44,33 @@ def procesar_archivo(archivo, nombre_cuenta):
             'ship-country': 'ship-country'
         }
         
-        # Buscar correspondencias sin importar mayúsculas/minúsculas
         columnas_encontradas = {}
         for col_original in df.columns:
             col_normalizada = str(col_original).lower().strip()
             if col_normalizada in mapeo:
                 columnas_encontradas[col_original] = mapeo[col_normalizada]
         
-        # Validar que el archivo subido sea el correcto
         if len(columnas_encontradas) < 6:
             st.error(f"⚠️ Al archivo de {nombre_cuenta} le faltan columnas esenciales de Amazon.")
             return None
             
-        # Filtrar y renombrar columnas
         df = df[list(columnas_encontradas.keys())]
         df = df.rename(columns=columnas_encontradas)
         df['CUENTA'] = nombre_cuenta
         
-        # Limpieza de nulos y conversión numérica [cite: 23, 24]
         df = df.dropna(subset=['CANTIDAD', 'IMPORTE TOTAL'])
         df['CANTIDAD'] = pd.to_numeric(df['CANTIDAD'], errors='coerce')
         df['IMPORTE TOTAL'] = pd.to_numeric(df['IMPORTE TOTAL'], errors='coerce')
         df = df[(df['CANTIDAD'] > 0) & (df['IMPORTE TOTAL'] > 0)]
         
-        # Extracción e interpretación instantánea de fechas (evita cuelgues)
         df['FECHA_CORTA'] = df['FECHA'].astype(str).str.slice(0, 10)
         df['FECHA_DATETIME'] = pd.to_datetime(df['FECHA_CORTA'], format='%Y-%m-%d', errors='coerce')
         
-        # Calcular semana (Estilo Excel, Domingo a Sábado) y formatear texto [cite: 21]
         df['SEMANA'] = df['FECHA_DATETIME'].dt.strftime('%U').astype(float) + 1
         df['FECHA'] = df['FECHA_DATETIME'].dt.strftime('%d/%m/%Y')
         
-        # Limpieza de referencias (SKU) [cite: 22]
         df['REFERENCIA'] = df['REFERENCIA'].apply(limpiar_sku)
         
-        # Reordenación estructural final [cite: 25]
         columnas_finales = ['FECHA', 'SEMANA', 'REFERENCIA', 'ASIN', 'CANTIDAD', 'IMPORTE TOTAL', 'CUENTA', 'ship-country']
         df = df[columnas_finales].dropna(subset=['FECHA', 'SEMANA'])
         df['SEMANA'] = df['SEMANA'].astype(int)
@@ -86,6 +80,52 @@ def procesar_archivo(archivo, nombre_cuenta):
     except Exception as e:
         st.error(f"Error procesando los datos de {nombre_cuenta}: {str(e)}")
         return None
+
+def enviar_correo_marta(excel_bytes, nombre_archivo, num_semana):
+    try:
+        # Obtener credenciales seguras desde los Secrets del servidor
+        remitente = st.secrets["correo"]["usuario"]
+        password = st.secrets["correo"]["password"]
+        smtp_server = st.secrets["correo"]["servidor_smtp"]
+        puerto = int(st.secrets["correo"]["puerto"])
+        
+        destinatario = "martacuesta@cecotec.es"
+        
+        # Configurar la estructura del correo electrónico
+        msg = MIMEMultipart()
+        msg['From'] = remitente
+        msg['To'] = destinatario
+        msg['Subject'] = f"Informe de Ventas Amazon - Semana {num_semana}"
+        
+        cuerpo = f"""Hola Marta,
+
+Espero que estés muy bien.
+
+Adjunto a este correo encuentras el informe resumen de las ventas generadas en Amazon (cuentas Jabiru y Turaco) correspondientes a la semana anterior (Semana {num_semana}), optimizado y listo para el departamento de Marketing.
+
+Un saludo,
+Herramienta de Automatización
+"""
+        msg.attach(MIMEText(cuerpo, 'plain'))
+        
+        # Adjuntar el binario del archivo de Excel
+        part = MIMEBase('application', 'octet-stream')
+        part.set_payload(excel_bytes)
+        encoders.encode_base64(part)
+        part.add_header('Content-Disposition', f'attachment; filename={nombre_archivo}')
+        msg.attach(part)
+        
+        # Conexión y envío seguro a través de SMTP
+        server = smtplib.SMTP(smtp_server, puerto)
+        server.starttls()
+        server.login(remitente, password)
+        server.sendmail(remitente, destinatario, msg.as_string())
+        server.quit()
+        
+        return True
+    except Exception as e:
+        st.error(f"Error al enviar el correo: {e}")
+        return False
 
 # Unión y lógica de despliegue en pantalla
 dataframes = []
@@ -107,23 +147,37 @@ if len(dataframes) > 0:
     st.subheader("Vista previa del Informe Final")
     st.dataframe(resultado_final)
     
-    # Construcción del archivo Excel usando motores nativos estándar
+    # Construcción del archivo Excel en memoria
     @st.cache_data
     def generar_excel_estandar(df):
         buffer = io.BytesIO()
-        # openpyxl viene instalado por defecto en Streamlit Cloud, garantizando cero errores
         with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
             df.to_excel(writer, index=False, sheet_name='Ventas MKT')
         return buffer.getvalue()
     
     excel_final = generar_excel_estandar(resultado_final)
     num_semana = resultado_final['SEMANA'].iloc[0] if not resultado_final.empty else "Desconocida"
+    nombre_del_excel = f"Ventas_MKT_Semana_{num_semana}.xlsx"
     
-    st.download_button(
-        label="📥 Descargar Excel Unificado para Marta Cuesta",
-        data=excel_final,
-        file_name=f"Ventas_MKT_Semana_{num_semana}.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-    )
+    # --- SECCIÓN DE ACCIONES ---
+    st.write("---")
+    st.subheader("🚀 Acciones Disponibles")
     
-    st.info("📧 Enviar este reporte los miércoles a: martacuesta@cecotec.es [cite: 26, 27]")
+    col_descarga, col_correo = st.columns(2)
+    
+    with col_descarga:
+        st.download_button(
+            label="📥 Descargar copia en mi ordenador (Excel)",
+            data=excel_final,
+            file_name=nombre_del_excel,
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            use_container_width=True
+        )
+        
+    with col_correo:
+        # Botón dinámico para el envío automatizado por correo electrónico
+        if st.button("📧 Enviar informe directo a Marta Cuesta", use_container_width=True):
+            with st.spinner("Enviando correo con el archivo adjunto..."):
+                exito = enviar_correo_marta(excel_final, nombre_del_excel, num_semana)
+                if exito:
+                    st.success(f"📩 ¡Correo enviado con éxito a martacuesta@cecotec.es!")
