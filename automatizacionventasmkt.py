@@ -89,7 +89,7 @@ def enviar_correo_marta(excel_bytes, nombre_archivo, num_semana):
         smtp_server = st.secrets["correo"]["servidor_smtp"]
         puerto = int(st.secrets["correo"]["puerto"])
         
-        destinatario = "martacuesta@cecotec.es"
+        destinatario = "juanbrox@cecotec.es"
         
         # Configurar la estructura del correo electrónico
         msg = MIMEMultipart()
