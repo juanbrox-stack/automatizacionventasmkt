@@ -3,6 +3,7 @@ import pandas as pd
 import re
 import io
 import smtplib
+from datetime import datetime, timedelta
 from email.mime.multipart import MIMEMultipart
 from email.mime.base import MIMEBase
 from email.mime.text import MIMEText
@@ -13,7 +14,7 @@ st.set_page_config(page_title="Automatización Ventas MKT", page_icon="📊", la
 st.title("📊 Automatizador de Informe de Ventas - Marketing")
 st.write("Sube los archivos .txt actualizados descargados de Amazon para generar el informe consolidado.")
 
-# Selectores de archivos en la interfaz web (Carga volátil en memoria)
+# Selectores de archivos en la interfaz web
 col1, col2 = st.columns(2)
 with col1:
     archivo_jabiru = st.file_uploader("Subir TXT de JABIRU", type=["txt"])
@@ -63,11 +64,11 @@ def procesar_archivo(archivo, nombre_cuenta):
         df['IMPORTE TOTAL'] = pd.to_numeric(df['IMPORTE TOTAL'], errors='coerce')
         df = df[(df['CANTIDAD'] > 0) & (df['IMPORTE TOTAL'] > 0)]
         
-        # Interpretación limpia de fechas nativas antes de formatear
+        # Interpretación de fechas nativas
         df['FECHA_CORTA'] = df['FECHA'].astype(str).str.slice(0, 10)
         df['FECHA_DATETIME'] = pd.to_datetime(df['FECHA_CORTA'], format='%Y-%m-%d', errors='coerce')
         
-        # Calcular semana numérica
+        # Calcular semana numérica basada en Domingo (%U)
         df['SEMANA'] = df['FECHA_DATETIME'].dt.strftime('%U').astype(float) + 1
         
         df['REFERENCIA'] = df['REFERENCIA'].apply(limpiar_sku)
@@ -90,9 +91,7 @@ def enviar_correo_marta(excel_bytes, nombre_archivo, rango_fechas):
         puerto = int(st.secrets["correo"]["puerto"])
         
         destinatario = "martacuesta@cecotec.es"
-        
-        # Copia oculta de control (Ajusta con tu dirección real)
-        copias_ocultas = ["juanbrox@cecotec.es"] 
+        copias_ocultas = ["juanbrox@cecotec.es"]  # Coloca aquí tu email de control
         
         msg = MIMEMultipart()
         msg['From'] = remitente
@@ -145,27 +144,39 @@ if archivo_turaco:
         dataframes.append(df_t)
 
 if len(dataframes) > 0:
-    resultado_final = pd.concat(dataframes, ignore_index=True)
-    resultado_final = resultado_final.sort_values(by=['SEMANA', 'FECHA_DATETIME'], ascending=[True, True])
+    # Combinar datos crudos iniciales
+    df_crudo = pd.concat(dataframes, ignore_index=True)
     
-    # 📅 CÁLCULO CRONOLÓGICO SEGURO (Min y Max sobre objetos Datetime reales)
-    fecha_minima = resultado_final['FECHA_DATETIME'].min().strftime('%d/%m/%Y')
-    fecha_maxima = resultado_final['FECHA_DATETIME'].max().strftime('%d/%m/%Y')
-    rango_dias_texto = f"del {fecha_minima} al {fecha_maxima}"
+    # 🕵️ LOGICA DE FILTRADO PERIODO ESTRICTO (DOMINGO A SÁBADO)
+    # 1. Identificar la semana objetivo (la moda/más repetida del archivo)
+    semana_objetivo = int(df_crudo['SEMANA'].mode()[0])
+    anio_objetivo = int(df_crudo['FECHA_DATETIME'].dt.year.mode()[0])
     
-    # Transformar la columna temporal en formato visual para el usuario final
+    # 2. Calcular matemáticamente las fechas exactas del Domingo y Sábado de esa semana
+    # Con %U, el primer domingo del año es la semana 1. Creamos la fecha base:
+    fecha_base_semana = datetime.strptime(f'{anio_objetivo} {semana_objetivo-1} 0', '%Y %U %w')
+    
+    domingo_estricto = fecha_base_semana
+    sabado_estricto = fecha_base_semana + timedelta(days=6)
+    
+    # 3. Aplicar el recorte de seguridad en el DataFrame
+    resultado_final = df_crudo[(df_crudo['FECHA_DATETIME'] >= domingo_estricto) & (df_crudo['FECHA_DATETIME'] <= sabado_estricto)]
+    resultado_final = resultado_final.sort_values(by=['FECHA_DATETIME'], ascending=[True])
+    
+    # Textos formateados del rango estricto para la interfaz y el email
+    rango_dias_texto = f"del {domingo_estricto.strftime('%d/%m/%Y')} al {sabado_estricto.strftime('%d/%m/%Y')}"
+    
+    # Formatear la columna visual de fecha para el Excel final
     resultado_final['FECHA'] = resultado_final['FECHA_DATETIME'].dt.strftime('%d/%m/%Y')
     
-    num_semana = resultado_final['SEMANA'].iloc[0] if not resultado_final.empty else "Desconocida"
-    
-    # Reordenar las columnas idéntico al requerimiento antes de volcar la vista
+    # Reordenar columnas finales de salida
     columnas_vista = ['FECHA', 'SEMANA', 'REFERENCIA', 'ASIN', 'CANTIDAD', 'IMPORTE TOTAL', 'CUENTA', 'ship-country']
     df_mostrar = resultado_final[columnas_vista]
     
-    st.success("🎯 ¡Archivos combinados y procesados con éxito!")
-    st.info(f"📅 Rango de días detectado automáticamente: **{rango_dias_texto}**")
+    st.success("🎯 ¡Archivos combinados con éxito! Se aplicó el recorte de seguridad de días sobrantes.")
+    st.info(f"📅 Periodo oficial de análisis: **{rango_dias_texto}** (Semana {semana_objetivo})")
     
-    st.subheader("Vista previa del Informe Final")
+    st.subheader("Vista previa del Informe Final Filtrado")
     st.dataframe(df_mostrar)
     
     # Construcción del archivo Excel en memoria
@@ -177,7 +188,7 @@ if len(dataframes) > 0:
         return buffer.getvalue()
     
     excel_final = generar_excel_estandar(df_mostrar)
-    nombre_del_excel = f"Ventas_MKT_Semana_{num_semana}.xlsx"
+    nombre_del_excel = f"Ventas_MKT_Semana_{semana_objetivo}.xlsx"
     
     # --- SECCIÓN DE ACCIONES ---
     st.write("---")
