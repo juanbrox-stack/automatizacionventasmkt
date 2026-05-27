@@ -13,7 +13,7 @@ st.set_page_config(page_title="Automatización Ventas MKT", page_icon="📊", la
 st.title("📊 Automatizador de Informe de Ventas - Marketing")
 st.write("Sube los archivos .txt actualizados descargados de Amazon para generar el informe consolidado.")
 
-# Selectores de archivos en la interfaz web
+# Selectores de archivos en la interfaz web (Carga volátil en memoria)
 col1, col2 = st.columns(2)
 with col1:
     archivo_jabiru = st.file_uploader("Subir TXT de JABIRU", type=["txt"])
@@ -63,17 +63,18 @@ def procesar_archivo(archivo, nombre_cuenta):
         df['IMPORTE TOTAL'] = pd.to_numeric(df['IMPORTE TOTAL'], errors='coerce')
         df = df[(df['CANTIDAD'] > 0) & (df['IMPORTE TOTAL'] > 0)]
         
-        # Procesamiento rápido de fechas
+        # Interpretación limpia de fechas nativas antes de formatear
         df['FECHA_CORTA'] = df['FECHA'].astype(str).str.slice(0, 10)
         df['FECHA_DATETIME'] = pd.to_datetime(df['FECHA_CORTA'], format='%Y-%m-%d', errors='coerce')
         
-        # Calcular semana (Estilo Excel: Domingo a Sábado = %U)
-        df['SEMANA'] = df['FECHA_DATETIME'].dt.strftime('%U').astype(float).fillna(0).astype(int) + 1
-        
-        # Formatear la fecha visual como dd/mm/aaaa
-        df['FECHA'] = df['FECHA_DATETIME'].dt.strftime('%d/%m/%Y')
+        # Calcular semana numérica
+        df['SEMANA'] = df['FECHA_DATETIME'].dt.strftime('%U').astype(float) + 1
         
         df['REFERENCIA'] = df['REFERENCIA'].apply(limpiar_sku)
+        
+        columnas_finales = ['FECHA_DATETIME', 'SEMANA', 'REFERENCIA', 'ASIN', 'CANTIDAD', 'IMPORTE TOTAL', 'CUENTA', 'ship-country']
+        df = df[columnas_finales].dropna(subset=['FECHA_DATETIME', 'SEMANA'])
+        df['SEMANA'] = df['SEMANA'].astype(int)
         
         return df
 
@@ -81,7 +82,7 @@ def procesar_archivo(archivo, nombre_cuenta):
         st.error(f"Error procesando los datos de {nombre_cuenta}: {str(e)}")
         return None
 
-def enviar_correo_marta(excel_bytes, nombre_archivo, num_semana):
+def enviar_correo_marta(excel_bytes, nombre_archivo, rango_fechas):
     try:
         remitente = st.secrets["correo"]["usuario"]
         password = st.secrets["correo"]["password"]
@@ -90,17 +91,25 @@ def enviar_correo_marta(excel_bytes, nombre_archivo, num_semana):
         
         destinatario = "martacuesta@cecotec.es"
         
+        # Copia oculta de control (Ajusta con tu dirección real)
+        copias_ocultas = ["tu-correo@tuempresa.com"] 
+        
         msg = MIMEMultipart()
         msg['From'] = remitente
         msg['To'] = destinatario
-        msg['Subject'] = f"Informe de Ventas Amazon - Semana {num_semana}"
+        msg['Subject'] = f"Informe de Ventas Amazon (Periodo: {rango_fechas})"
+        
+        if copias_ocultas:
+            msg['Bcc'] = ", ".join(copias_ocultas)
         
         cuerpo = f"""Hola Marta,
 
-Adjunto el informe resumen de las ventas generadas en Amazon (cuentas Jabiru y Turaco) correspondientes a la semana anterior (Semana {num_semana}).
+Espero que estés muy bien.
 
-Un saludo.
+Adjunto a este correo encuentras el informe resumen de las ventas generadas en Amazon (cuentas Jabiru y Turaco) correspondientes al periodo {rango_fechas}, optimizado y listo para el departamento de Marketing.
 
+Un saludo,
+Herramienta de Automatización
 """
         msg.attach(MIMEText(cuerpo, 'plain'))
         
@@ -110,10 +119,12 @@ Un saludo.
         part.add_header('Content-Disposition', f'attachment; filename={nombre_archivo}')
         msg.attach(part)
         
+        todos_los_destinatarios = [destinatario] + copias_ocultas
+        
         server = smtplib.SMTP(smtp_server, puerto)
         server.starttls()
         server.login(remitente, password)
-        server.sendmail(remitente, destinatario, msg.as_string())
+        server.sendmail(remitente, todos_los_destinatarios, msg.as_string())
         server.quit()
         
         return True
@@ -121,7 +132,7 @@ Un saludo.
         st.error(f"Error al enviar el correo: {e}")
         return False
 
-# Lógica de unificación y filtrado estricto por número de semana
+# Unión y lógica de despliegue en pantalla
 dataframes = []
 if archivo_jabiru:
     df_j = procesar_archivo(archivo_jabiru, "JABIRU")
@@ -135,27 +146,29 @@ if archivo_turaco:
 
 if len(dataframes) > 0:
     resultado_final = pd.concat(dataframes, ignore_index=True)
+    resultado_final = resultado_final.sort_values(by=['SEMANA', 'FECHA_DATETIME'], ascending=[True, True])
     
-    # --- FILTRADO DE SEMANA ANTERIOR DIRECTO ---
-    # 1. Encontrar el número de semana más alto presente en el informe unificado
-    semana_maxima = int(resultado_final['SEMANA'].max())
+    # 📅 CÁLCULO CRONOLÓGICO SEGURO (Min y Max sobre objetos Datetime reales)
+    fecha_minima = resultado_final['FECHA_DATETIME'].min().strftime('%d/%m/%Y')
+    fecha_maxima = resultado_final['FECHA_DATETIME'].max().strftime('%d/%m/%Y')
+    rango_dias_texto = f"del {fecha_minima} al {fecha_maxima}"
     
-    # 2. Eliminar cualquier fila que pertenezca a una semana menor a la máxima
-    resultado_final = resultado_final[resultado_final['SEMANA'] == semana_maxima]
+    # Transformar la columna temporal en formato visual para el usuario final
+    resultado_final['FECHA'] = resultado_final['FECHA_DATETIME'].dt.strftime('%d/%m/%Y')
     
-    # Estructura de columnas requerida
-    columnas_finales = ['FECHA', 'SEMANA', 'REFERENCIA', 'ASIN', 'CANTIDAD', 'IMPORTE TOTAL', 'CUENTA', 'ship-country']
-    resultado_final = resultado_final[columnas_finales].dropna(subset=['FECHA'])
+    num_semana = resultado_final['SEMANA'].iloc[0] if not resultado_final.empty else "Desconocida"
     
-    # Ordenar cronológicamente por fecha
-    resultado_final = resultado_final.sort_values(by=['FECHA'], ascending=[True])
+    # Reordenar las columnas idéntico al requerimiento antes de volcar la vista
+    columnas_vista = ['FECHA', 'SEMANA', 'REFERENCIA', 'ASIN', 'CANTIDAD', 'IMPORTE TOTAL', 'CUENTA', 'ship-country']
+    df_mostrar = resultado_final[columnas_vista]
     
-    st.success(f"🎯 ¡Archivos procesados con éxito! Se ha limpiado el reporte dejando únicamente la **Semana {semana_maxima}**.")
+    st.success("🎯 ¡Archivos combinados y procesados con éxito!")
+    st.info(f"📅 Rango de días detectado automáticamente: **{rango_dias_texto}**")
     
-    st.subheader(f"Vista previa del Informe Final (Semana {semana_maxima})")
-    st.dataframe(resultado_final)
+    st.subheader("Vista previa del Informe Final")
+    st.dataframe(df_mostrar)
     
-    # Generar Excel en memoria
+    # Construcción del archivo Excel en memoria
     @st.cache_data
     def generar_excel_estandar(df):
         buffer = io.BytesIO()
@@ -163,10 +176,10 @@ if len(dataframes) > 0:
             df.to_excel(writer, index=False, sheet_name='Ventas MKT')
         return buffer.getvalue()
     
-    excel_final = generar_excel_estandar(resultado_final)
-    nombre_del_excel = f"Ventas_MKT_Semana_{semana_maxima}.xlsx"
+    excel_final = generar_excel_estandar(df_mostrar)
+    nombre_del_excel = f"Ventas_MKT_Semana_{num_semana}.xlsx"
     
-    # Secciones de descargas y envíos
+    # --- SECCIÓN DE ACCIONES ---
     st.write("---")
     st.subheader("🚀 Acciones Disponibles")
     
@@ -184,6 +197,6 @@ if len(dataframes) > 0:
     with col_correo:
         if st.button("📧 Enviar informe directo a Marta Cuesta", use_container_width=True):
             with st.spinner("Enviando correo con el archivo adjunto..."):
-                exito = enviar_correo_marta(excel_final, nombre_del_excel, semana_maxima)
+                exito = enviar_correo_marta(excel_final, nombre_del_excel, rango_dias_texto)
                 if exito:
-                    st.success(f"📩 ¡Correo enviado con éxito a Marketing!")
+                    st.success(f"📩 ¡Correo enviado con éxito a martacuesta@cecotec.es (Periodo: {rango_dias_texto})!")
