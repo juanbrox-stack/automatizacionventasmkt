@@ -92,7 +92,7 @@ def enviar_correo_marta(excel_bytes, nombre_archivo, rango_fechas):
         destinatario = "martacuesta@cecotec.es"
         
         # Copia oculta de control (Ajusta con tu dirección real)
-        copias_ocultas = ["tu-correo@tuempresa.com"] 
+        copias_ocultas = ["juanbrox@cecotec.es"] 
         
         msg = MIMEMultipart()
         msg['From'] = remitente
